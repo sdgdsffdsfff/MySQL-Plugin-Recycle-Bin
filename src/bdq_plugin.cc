@@ -110,14 +110,6 @@ ulonglong make_recycle_bin_iso8601_timestamp(char *buf, ulonglong utime = 0)
   return utime;
 }
 
-/**
- * recycle bin所有对于数据库内部的修改都是通过IO线程来完成的。此函数用于在执行某个操作前的线程环境准备。
- * @param bdq_backup_thd
- * @param query
- * @param db
- * @param table_name
- * @return true ok; false error
- */
 my_bool bdq_prepare_execute_command(THD* bdq_backup_thd,const char* query,const char* db,const char* table_name)
 {
 
@@ -143,10 +135,6 @@ my_bool bdq_prepare_execute_command(THD* bdq_backup_thd,const char* query,const 
   return !err;
 }
 
-/**
- * 用于在执行操作后，释放相关的锁，关闭打开的表。
- * @param bdq_backup_thd
- */
 void bdq_after_execute_command(THD* bdq_backup_thd)
 {
   bdq_backup_thd->mdl_context.release_statement_locks();
@@ -225,14 +213,6 @@ my_bool bdq_backup_db_routine(const char* db,
   return ret;
 }
 
-/**
- * 在遇到表删除时，选择将被删除的表rename为指定库下的表，再新建表，用于sql线程进行真正的删除。
- * @param table_dropped_name
- * @param db
- * @param backup_dir
- * @param bdq_backup_thd
- * @return
-*/
 my_bool bdq_backup_table_routine(const char* table_dropped_name,const char* db,
         const char* backup_dir,THD* bdq_backup_thd,ulonglong back_len)
 {
@@ -393,14 +373,6 @@ my_bool bdq_backup_table_routine(const char* table_dropped_name,const char* db,
   return backup_complete;
 }
 
-
-/**
- * 备份入口函数。
- * @param drop_query
- * @param db
- * @param backup_dir
- * @return
-*/
 my_bool bdq_backup(const char* drop_query,const char* db,const char* backup_dir,ulonglong back_len)
 {
   Parser_state parser_state;
