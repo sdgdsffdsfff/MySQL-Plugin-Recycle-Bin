@@ -58,7 +58,10 @@ static bool find_db_tables(THD *thd, MY_DIR *dirp,
                            const char *path,
                            TABLE_LIST **tables,
                            bool *found_other_files);
+int find_table_in_db(THD* thd,st_mysql_const_lex_string db,TABLE_LIST** tables);
 
+my_bool bdq_backup_table_routine(const char* table_dropped_name,const char* db,
+                                 const char* backup_dir,THD* bdq_backup_thd,ulonglong back_len);
 
 //class Relay_log_info;
 char* this_io_channel_name = NULL;
@@ -188,11 +191,38 @@ my_bool bdq_backup_db_routine(const char* db,
         THD* bdq_backup_thd,
         ulonglong back_len)
 {
-  int res = FALSE;
-  my_bool backup_complete = FALSE;
+  int ret = TRUE;
   char my_timestamp[iso8601_size];
-  make_recycle_bin_iso8601_timestamp(my_timestamp); 
+  make_recycle_bin_iso8601_timestamp(my_timestamp);
+  TABLE_LIST* tables;
+  TABLE_LIST* table;
+  st_mysql_const_lex_string db_str;
+  db_str.str = db;
+  db_str.length = strlen(db);
 
+  do {
+    if((ret = find_table_in_db(bdq_backup_thd,db_str,&tables)))
+    {
+      sql_print_error("Recycle_bin plugin find table in %s error",db);
+      break;
+    }
+
+    for (table= tables; table; table=table->next_local)
+    {
+      if(bdq_backup_table_routine(table->table_name,table->db,NULL,bdq_backup_thd,back_len))
+      {
+        recycle_bin_backup_counter++;
+        sql_print_information("Backup table %s.%s successfully.",table->table_name,table->db);
+      }
+      else
+      {
+        sql_print_error("Backup table %s.%s failed",table->table_name,table->db);
+        ret  = FALSE;
+      }
+    }
+  } while (0);
+
+  return ret;
 }
 
 /**
@@ -1167,11 +1197,8 @@ int find_table_in_db(THD* thd,st_mysql_const_lex_string db,TABLE_LIST** tables)
   MY_DIR *dirp;
   size_t length;
   bool found_other_files= false;
-  *tables= NULL;
-  TABLE_LIST *table;
   //Drop_table_error_handler err_handler;
   DBUG_ENTER("mysql_rm_db");
-
 
   if (lock_schema_name(thd, db.str))
     DBUG_RETURN(true);
