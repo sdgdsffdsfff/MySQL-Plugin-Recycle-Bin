@@ -35,6 +35,11 @@
 #include "rpl_msr.h"
 #include "rpl_mi.h"
 #include "rpl_rli.h"
+#include <vector>
+#include <string>
+using std::vector;
+using std::string;
+
 
 #ifdef HAVE_PSI_INTERFACE
 PSI_mutex_key  key_ss_mutex_bdq_purge_mutex;
@@ -48,6 +53,11 @@ PSI_thread_key key_ss_thread_bdq_purge_thread;
 
 void switch_recycle_bin_status(char in_status);
 bool purged_table();
+static bool find_db_tables(THD *thd, MY_DIR *dirp,
+                           const char *db,
+                           const char *path,
+                           TABLE_LIST **tables,
+                           bool *found_other_files);
 
 
 //class Relay_log_info;
@@ -173,6 +183,18 @@ bool wait_for_sql_thread(ulonglong back_len)
   return false;
 }
 
+my_bool bdq_backup_db_routine(const char* db,
+        const char* backup_dr,
+        THD* bdq_backup_thd,
+        ulonglong back_len)
+{
+  int res = FALSE;
+  my_bool backup_complete = FALSE;
+  char my_timestamp[iso8601_size];
+  make_recycle_bin_iso8601_timestamp(my_timestamp); 
+
+}
+
 /**
  * 在遇到表删除时，选择将被删除的表rename为指定库下的表，再新建表，用于sql线程进行真正的删除。
  * @param table_dropped_name
@@ -195,13 +217,9 @@ my_bool bdq_backup_table_routine(const char* table_dropped_name,const char* db,
   my_bool backup_complete = FALSE;
   char my_timestamp[iso8601_size];
 
+  /*Stage 1: turn off sql_log_bin.*/
   make_recycle_bin_iso8601_timestamp(my_timestamp);
-
-  //stage 1.改变当前线程的sql_log_bin = 0;不写binlog操作。
-
   bdq_backup_thd->variables.sql_log_bin = FALSE;
-  //bdq_backup_thd->lex->unit->thd = bdq_backup_thd;
-
   if (bdq_backup_thd->variables.sql_log_bin)
   {
     bdq_backup_thd->variables.option_bits |= OPTION_BIN_LOG;
@@ -211,7 +229,7 @@ my_bool bdq_backup_table_routine(const char* table_dropped_name,const char* db,
     bdq_backup_thd->variables.option_bits &= ~OPTION_BIN_LOG;
   }
 
-  //stage 2.create database if not exists.
+  /*Stage 2: create database if not exists.*/
   sprintf(query_create_recycle_bin_db,"create database if not exists %s",recycle_bin_database_name);
   if(bdq_prepare_execute_command(bdq_backup_thd,
                                  query_create_recycle_bin_db,db,table_dropped_name))
@@ -242,13 +260,13 @@ my_bool bdq_backup_table_routine(const char* table_dropped_name,const char* db,
     goto exit_bdq_btr;
   }
 
-  //stage 3.wait for sql thread no delay.
+ /*Stage 3: wait for sql thread no delay.*/
   if(!wait_for_sql_thread(back_len))
   {
     backup_complete = FALSE;
     goto exit_bdq_btr;
   }
-  //stage 4.rename A.a for backup.
+  /*Stage 4: rename A.a for backup. */
   sprintf(query_rename_table,"RENAME TABLE `%s`.`%s` to `%s`.`%s_%s_%s_%s`",
           db,table_dropped_name,
           recycle_bin_database_name,db,table_dropped_name,recycle_bin_time_flag,my_timestamp);
@@ -281,7 +299,6 @@ my_bool bdq_backup_table_routine(const char* table_dropped_name,const char* db,
     goto exit_bdq_btr;
   }
 
-  //在数据库层执行完rename之后就是已经完成备份操作了，但是如果stage 4出错的话，可能会影响复制的SQL线程正常回放。
   backup_complete = TRUE;
   //stage 5.create A.a(id int not null auto_increment primary key);
   sprintf(query_create_virtual_table,
@@ -337,8 +354,6 @@ my_bool bdq_backup_table_routine(const char* table_dropped_name,const char* db,
   {
     goto exit_bdq_btr;
   }
-  //stage 5.increment backup tables successfully status.
-
   exit_bdq_btr:
   bdq_after_execute_command(bdq_backup_thd);
   delete[] query_rename_table;
@@ -389,18 +404,19 @@ my_bool bdq_backup(const char* drop_query,const char* db,const char* backup_dir,
     sql_print_error("Plugin bdq parse_sql error");
     return FALSE;
   }
-
-  if(!(lex->query_tables))
-  {
-    return TRUE;
-  }
-  char* in_db = strdup(lex->query_tables->db);
   lex_end(lex);
 
+//  if(!(lex->query_tables))
+//  {
+//    return TRUE;
+//  }
+
+  char* in_db = NULL;
   switch(lex->sql_command)
   {
     case SQLCOM_DROP_TABLE:
     {
+      in_db = strdup(lex->query_tables->db);
       char* in_table = strdup(lex->query_tables->table_name);
       sql_print_information("Master drop table %s.%s",in_db,in_table);
       if(bdq_backup_table_routine(in_table,in_db,backup_dir,bdq_backup_thd,back_len))
@@ -419,6 +435,18 @@ my_bool bdq_backup(const char* drop_query,const char* db,const char* backup_dir,
     case SQLCOM_DROP_DB:
     {
       sql_print_information("Master drop database %s",db);
+
+      if(bdq_backup_db_routine(db,backup_dir,bdq_backup_thd,back_len))
+      {
+        recycle_bin_backup_counter++;
+        sql_print_information("Backup database %s successfully.",db);
+      }
+      else
+      {
+        sql_print_error("Backup database %s failed",db);
+      }
+
+      bdq_after_execute_command(bdq_backup_thd);
       break;
     }
 
@@ -428,8 +456,11 @@ my_bool bdq_backup(const char* drop_query,const char* db,const char* backup_dir,
     }
   }
 
-  free(in_db);
-  in_db = NULL;
+  if(in_db)
+  {
+    free(in_db);
+    in_db = NULL;
+  }
   return TRUE;
 }
 
@@ -1125,4 +1156,188 @@ bool purged_table()
   }
 
   return true;
+}
+
+int find_table_in_db(THD* thd,st_mysql_const_lex_string db,TABLE_LIST** tables)
+{
+  int ret = 0;
+  Drop_table_error_handler err_handler;
+  bool error= true;
+  char	path[2 * FN_REFLEN + 16];
+  MY_DIR *dirp;
+  size_t length;
+  bool found_other_files= false;
+  *tables= NULL;
+  TABLE_LIST *table;
+  //Drop_table_error_handler err_handler;
+  DBUG_ENTER("mysql_rm_db");
+
+
+  if (lock_schema_name(thd, db.str))
+    DBUG_RETURN(true);
+
+  length= build_table_filename(path, sizeof(path) - 1, db.str, "", "", 0);
+  my_stpcpy(path+length, MY_DB_OPT_FILE);		// Append db option file name
+  // del_dbopt(path);				// Remove dboption hash entry
+  path[length]= '\0';				// Remove file name
+
+  /* See if the directory exists */
+  if (!(dirp= my_dir(path,MYF(MY_DONT_SORT))))
+  {
+//    if (!if_exists)
+//    {
+//      my_error(ER_DB_DROP_EXISTS, MYF(0), db.str);
+//      DBUG_RETURN(true);
+//    }
+//    else
+//    {
+//      push_warning_printf(thd, Sql_condition::SL_NOTE,
+//                          ER_DB_DROP_EXISTS, ER(ER_DB_DROP_EXISTS), db.str);
+//      error= false;
+//    }
+    return FALSE;
+  }
+
+  if ((error = find_db_tables(thd, dirp, db.str, path,tables,
+                                               &found_other_files)) )
+  {
+    goto exit;
+  }
+
+exit:
+  /*
+    If this database was the client's selected database, we silently
+    change the client's selected database to nothing (to have an empty
+    SELECT DATABASE() in the future). For this we free() thd->db and set
+    it to 0.
+  */
+
+  // bdq_after_execute_command(thd);
+
+  bdq_backup_thd->mdl_context.release_statement_locks();
+  bdq_backup_thd->mdl_context.release_transactional_locks();
+
+  DBUG_RETURN(error);
+
+  return ret;
+}
+
+static bool find_db_tables(THD *thd, MY_DIR *dirp,
+                                            const char *db,
+                                            const char *path,
+                                            TABLE_LIST **tables,
+                                            bool *found_other_files)
+{
+//  char filePath[FN_REFLEN];
+  TABLE_LIST *tot_list=0, **tot_list_next_local, **tot_list_next_global;
+  DBUG_ENTER("find_db_tables_and_rm_known_files");
+  DBUG_PRINT("enter",("path: %s", path));
+  TYPELIB *known_extensions= ha_known_exts();
+
+  tot_list_next_local= tot_list_next_global= &tot_list;
+
+  for (uint idx=0 ;
+       idx < dirp->number_off_files && !thd->killed ;
+       idx++)
+  {
+    FILEINFO *file=dirp->dir_entry+idx;
+    char *extension;
+    DBUG_PRINT("info",("Examining: %s", file->name));
+
+    /* skiping . and .. */
+    if (file->name[0] == '.' && (!file->name[1] ||
+                                 (file->name[1] == '.' &&  !file->name[2])))
+      continue;
+
+    if (file->name[0] == 'a' && file->name[1] == 'r' &&
+        file->name[2] == 'c' && file->name[3] == '\0')
+    {
+      /* .frm archive:
+        Those archives are obsolete, but following code should
+        exist to remove existent "arc" directories.
+      */
+      char newpath[FN_REFLEN];
+      MY_DIR *new_dirp;
+      strxmov(newpath, path, "/", "arc", NullS);
+      (void) unpack_filename(newpath, newpath);
+      if ((new_dirp = my_dir(newpath, MYF(MY_DONT_SORT))))
+      {
+        DBUG_PRINT("my",("Archive subdir found: %s", newpath));
+        if ((mysql_rm_arc_files(thd, new_dirp, newpath)) < 0)
+          DBUG_RETURN(true);
+        continue;
+      }
+      *found_other_files= true;
+      continue;
+    }
+    if (!(extension= strrchr(file->name, '.')))
+      extension= strend(file->name);
+    if (find_type(extension, &deletable_extentions, FIND_TYPE_NO_PREFIX) <= 0)
+    {
+      if (find_type(extension, known_extensions, FIND_TYPE_NO_PREFIX) <= 0)
+        *found_other_files= true;
+      continue;
+    }
+    /* just for safety we use files_charset_info */
+    if (db && !my_strcasecmp(files_charset_info,
+                             extension, reg_ext))
+    {
+      /* Drop the table nicely */
+      *extension= 0;			// Remove extension
+      TABLE_LIST *table_list=(TABLE_LIST*)
+              thd->mem_calloc(sizeof(*table_list) +
+                              strlen(db) + 1 +
+                              MYSQL50_TABLE_NAME_PREFIX_LENGTH +
+                              strlen(file->name) + 1);
+
+      if (!table_list)
+        DBUG_RETURN(true);
+      table_list->db= (char*) (table_list+1);
+      table_list->db_length= my_stpcpy(const_cast<char*>(table_list->db),
+                                       db) - table_list->db;
+      table_list->table_name= table_list->db + table_list->db_length + 1;
+      table_list->table_name_length= filename_to_tablename(file->name,
+                                                           const_cast<char*>(table_list->table_name),
+                                                           MYSQL50_TABLE_NAME_PREFIX_LENGTH +
+                                                           strlen(file->name) + 1);
+      table_list->open_type= OT_BASE_ONLY;
+
+      /* To be able to correctly look up the table in the table cache. */
+      if (lower_case_table_names)
+        table_list->table_name_length= my_casedn_str(files_charset_info,
+                                                     const_cast<char*>(table_list->table_name));
+
+      table_list->alias= table_list->table_name;	// If lower_case_table_names=2
+      table_list->internal_tmp_table= is_prefix(file->name, tmp_file_prefix);
+      MDL_REQUEST_INIT(&table_list->mdl_request,
+                       MDL_key::TABLE, table_list->db,
+                       table_list->table_name, MDL_EXCLUSIVE,
+                       MDL_TRANSACTION);
+
+      size_t time_buf_start_pos =0;
+      /* Link into list */
+      (*tot_list_next_local)= table_list;
+      (*tot_list_next_global)= table_list;
+      tot_list_next_local= &table_list->next_local;
+      tot_list_next_global= &table_list->next_global;
+    }
+    else
+    {
+//      strxmov(filePath, path, "/", file->name, NullS);
+//      /*
+//        We ignore ENOENT error in order to skip files that was deleted
+//        by concurrently running statement like REAPIR TABLE ...
+//      */
+//      if (my_delete_with_symlink(filePath, MYF(0)) &&
+//          my_errno() != ENOENT)
+//      {
+//        char errbuf[MYSYS_STRERROR_SIZE];
+//        my_error(EE_DELETE, MYF(0), filePath,
+//                 my_errno(), my_strerror(errbuf, sizeof(errbuf), my_errno()));
+//        DBUG_RETURN(true);
+//      }
+    }
+  }
+  *tables= tot_list;
+  DBUG_RETURN(false);
 }
