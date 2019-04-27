@@ -74,7 +74,7 @@ THD* bdq_backup_thd = NULL;
 static char query_create_table[]="CREATE TABLE  (id int not null auto_increment primary key)ENGINE=INNODB";
 static const char query_create_backup_database[] = "create database if not exists ``";
 const int iso8601_size= 33;
-static const char recycle_bin_time_flag[] = "ashesun";
+static const char recycle_bin_time_flag[] = "$st$";
 ulonglong new_last_master_log_pos = 0;
 ulonglong wait_for_master_log_pos = 0;
 
@@ -407,11 +407,6 @@ my_bool bdq_backup(const char* drop_query,const char* db,const char* backup_dir,
     return FALSE;
   }
   lex_end(lex);
-
-//  if(!(lex->query_tables))
-//  {
-//    return TRUE;
-//  }
 
   char* in_db = NULL;
   switch(lex->sql_command)
@@ -1057,13 +1052,12 @@ bool purge_tables_before_time(THD* thd,st_mysql_const_lex_string db,bool if_exis
   bool found_other_files= false;
   TABLE_LIST *tables= NULL;
   TABLE_LIST *table;
-  //Drop_table_error_handler err_handler;
-  DBUG_ENTER("mysql_rm_db");
+  DBUG_ENTER("purge_tables_before_time");
 
-
-  if (lock_schema_name(thd, db.str))
-    DBUG_RETURN(true);
-
+  if ((error = lock_schema_name(thd, db.str)))
+  {
+    goto exit;
+  }
   length= build_table_filename(path, sizeof(path) - 1, db.str, "", "", 0);
   my_stpcpy(path+length, MY_DB_OPT_FILE);		// Append db option file name
   // del_dbopt(path);				// Remove dboption hash entry
@@ -1072,23 +1066,15 @@ bool purge_tables_before_time(THD* thd,st_mysql_const_lex_string db,bool if_exis
   /* See if the directory exists */
   if (!(dirp= my_dir(path,MYF(MY_DONT_SORT))))
   {
-//    if (!if_exists)
-//    {
-//      my_error(ER_DB_DROP_EXISTS, MYF(0), db.str);
-//      DBUG_RETURN(true);
-//    }
-//    else
-//    {
-//      push_warning_printf(thd, Sql_condition::SL_NOTE,
-//                          ER_DB_DROP_EXISTS, ER(ER_DB_DROP_EXISTS), db.str);
-//      error= false;
-//    }
-    return FALSE;
+    sql_print_error("Recycle_bin encounter err path %s",path);
+    error = TRUE;
+    goto exit;
   }
 
   if ((error = find_db_tables_should_be_purged(thd, dirp, db.str, path, &tables,
                                         &found_other_files,utime)) )
   {
+    sql_print_error("Recycle_bin find tables that should be purged error");
     goto exit;
   }
 
@@ -1099,12 +1085,17 @@ bool purge_tables_before_time(THD* thd,st_mysql_const_lex_string db,bool if_exis
 
   if ((error=lock_table_names(thd, tables, NULL, thd->variables.lock_wait_timeout, 0)))
   {
+    sql_print_error("Recycle_bin lock table names error");
     goto exit;
   }
 
   if(tables)
   {
     mysql_ha_rm_tables(thd, tables);
+  }
+  else
+  {
+      goto exit;
   }
 
   for (table= tables; table; table= table->next_local)
@@ -1118,20 +1109,16 @@ bool purge_tables_before_time(THD* thd,st_mysql_const_lex_string db,bool if_exis
       !(tables &&
         mysql_rm_table_no_locks(thd, tables, true, false, true, true)))
   {
-    //nothing to do.
+      sql_print_information("Recycle_bin purged tables successfully");
   }
-  thd->pop_internal_handler();
+  else
+  {
+      sql_print_error("Recycle_bin purged table error");
+  }
+
 
   exit:
-  /*
-    If this database was the client's selected database, we silently
-    change the client's selected database to nothing (to have an empty
-    SELECT DATABASE() in the future). For this we free() thd->db and set
-    it to 0.
-  */
-
- // bdq_after_execute_command(thd);
-
+    thd->pop_internal_handler();
   bdq_backup_thd->mdl_context.release_statement_locks();
   bdq_backup_thd->mdl_context.release_transactional_locks();
 
