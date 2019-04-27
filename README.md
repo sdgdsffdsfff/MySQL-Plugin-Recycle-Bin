@@ -1,55 +1,45 @@
-# MySQL-Plugin-Recycle-Bin
+# MySQL防误删插件Recycle-Bin
 
-## 一、简介
+## 1.  Recycle-Bin简介
 
-recycle_bin是一款MySQL插件，可以在不修改任何MySQL代码的情况下，自动备份MySQL中被Drop的表，在出现人为误操作删表时，可以快速的进行恢复，
-实现思路借鉴了Oracle flashback的功能，但是从功能完整性上来讲，还有较大的差距,目前仍在完善中。
+recycle_bin是一款MySQL插件，可以在不修改任何MySQL代码的情况下，自动备份MySQL中被Drop的数据库/表，在出现人为误操作删表时，可以快速的进行恢复。
+实现灵感来源于Oracle flashback的功能，但是从功能完整性上来讲，还有较大的差距,目前仍在完善中。
 
-recycle_bin并不直接作用于master，而是工作在主从环境中的从机上，当通过程序或者人为在master上进行drop table操作时，slave会拦截drop操作，
-先进行数据备份，再进行删除操作。当备份文件超过保存时间后，recycle_bin会自动清除这些备份数据。
+## 2. Recycle-Bin工作原理
+原理非常简单，没什么技术含量。recycle_bin并不直接作用于master实例，而是工作在复制环境中的slave实例上，当通过程序/脚本或者人为在master实例上进行drop操作时，slave实例可以拦截drop操作，先进行数据备份，再进行删除操作。当备份文件超过保存时间后，recycle_bin会自动清除这些备份数据。完整的工作流程可以参照下图
 
-欢迎加入MySQL内核交流群
+![image](./doc/img/async_recycle_bin.png)
 
-![QQ群](./doc/img/recycle_bin.png)
+![image](./doc/img/semisync_recycle_bin.png)
 
 长久以来，MySQL DBA通过一系列的方法限制非超级用户的Drop权限来避免数据表的误删除操作。但是权限收敛并不意味着不需要去进行Drop操作，一旦实施Drop操作，无论是手动还是通过程序自动化进行，就都有可能出现误操作。更不要说一些没有专人维护的数据库实例，RD直接操作数据库更容易引起误删的问题。
 
-即便我们已经有了非常完善的备份策略，可以通过全量+增量的方式恢复删除的数据，但是时间成本太高；还有系统级别的数据恢复方案等等，也不能完全保证数据可以恢复到完全一致的状态，可能出现一次核心业务的表误删除操作，全年RTO就不达标。
+即便我们已经有了非常完善的备份策略，可以通过全量+增量的方式恢复删除的数据，但是时间成本太高；还有系统级别的数据恢复方案等等，也不能完全保证数据可以恢复到完全一致的状态，可能出现一次核心业务的表误删除操作，SLA就无法达标。
 
-然之后我们又想通过复制延迟来解决这个问题，在master上执行了drop操作之后，slave在设定时间内不会应用日志，所以可以通过slave找到相对应的数据。但这个方案会影响正常数据库切换逻辑，监控处理逻辑等等。总之，对我们现有的一套运维方案，高可用架构的侵入性太强。
+然之后我们又想通过复制延迟来解决这个问题，在master实例上执行了drop操作之后，slave在设定时间内不会应用日志，可以通过slave实例找到相对应的数据，但这个方案会影响数据库切换逻辑，导致切换时间倍增，并且固定的复制延迟意味着某些查询操作不能路由到从实例上，对于监控上来讲也是一个不可避免的问题。
 
-而Recycle_Bin这个插件就是为了解决这些痛点而生的，当master出现错误的drop操作时，slave不会原本按照master的删除方式进行删除，将被删除的表放到用户可执行的备份数据库中。
-此时的数据恢复方案可以有一下两种选择
+## 3. Recycle_bin安装部署说明
 
-- 从slave中将数据导出，导入到master中
-- 做主从切换，新主上直接rename即可。
+### 3.1  下载编译好的lib文件
+```bash
+#下载页面
+https://github.com/sunashe/MySQL-Plugin-Recycle-Bin/releases
+```
 
-
-## 二、Recycle_bin详细说明
-
-### 编译/下载/安装/卸载
-可以通过下载源码编译，或者直接下载库文件
-
-#### 源码编译
-源码编译依赖MySQL源代码，推荐使用5.7.18以上的版本进行编译。
+### 3.2 源码编译
+可以通过下载源代码编译，源码编译依赖MySQL源代码，推荐使用5.7.18以上的版本进行编译。
 ```sh
 git clone git@github.com:sunashe/MySQL-Plugin-Recycle-Bin.git
 cp -r MySQL-Plugin-Recycle-Bin  mysql_source_dir/plugin/
 cd mysql_source_dir
 cmake . -DBUILD_CONFIG=mysql_release -DDOWNLOAD_BOOST=1  -DWITH_BOOST=/usr/local/boost/
 cd plugin/MySQL-Plugin-Recycle-Bin
-make 
-#拷贝当前目录下的recycle_bin.so到MySQL中配置的plugin_dir下。
+make
 ```
 
-#### 下载编译好的lib文件
+### 3.3 安装插件
 ```bash
-下载页面
-https://github.com/sunashe/MySQL-Plugin-Recycle-Bin/releases
-```
-
-#### 安装插件
-```bash
+#拷贝下载或者编译得到的recycle_bin.so到MySQL中配置的plugin_dir下。并且更改所属用户。
 mysql> install plugin recycle_bin soname 'recycle_bin.so';
 Query OK, 0 rows affected (0.02 sec)
 ```
@@ -58,13 +48,15 @@ Query OK, 0 rows affected (0.02 sec)
 2019-02-20T19:52:27.326951+08:00 22 [Note] Install Plugin 'recycle_bin' successfully.
 ```
 
-#### 卸载插件
+### 3.4 卸载插件
+和卸载其它插件一样，命令如下：
 ```bash
 mysql> uninstall plugin recycle_bin;
 Query OK, 0 rows affected (0.02 sec)
 ```
-### 参数说明
-
+## 4. Recycle_Bin 参数/状态说明
+插件引入了一些新的参数和状态信息，可以在MySQL中通过`show`命令查看。
+### 4.1 增加的variables
 - recycle_bin_enabled
 全局控制操作，ON表示开启recycle_bin的功能，在recycle_bin准备就绪后，会自动备份被Drop的表
 
@@ -78,7 +70,7 @@ Query OK, 0 rows affected (0.02 sec)
 备份操作时，需要等待所有相关的dml语句回放完成，recycle_bin_check_sql_delay_period用于
 控制判断周期。默认为10us.
 
-### 状态值
+### 4.2 增加的status
 
 - Recycle_bin_status
 recycle_bin的工作状态，recycle_bin_enabled只是一个参数控制，而Recycle_bin_status表示已经符合了条件
@@ -86,7 +78,26 @@ recycle_bin的工作状态，recycle_bin_enabled只是一个参数控制，而Re
 或者重启复制IO线程。
 
 
-#### 使用示例
+## 5. 使用说明和限制
+
+### 5.1 使用说明
+- 支持异步或者半同步复制，可以和半同步复制插件一起工作在slave实例上。 对于异步复制来讲，不会影响master实例的性能，对于半同步复制来讲，会有5%左右的性能损失。
+- 可以通过手动drop table的方式清除recycle_bin_dba下的备份表。
+- 数据备份的自动清除会在业务无写入时进行，也可以通过手动清除。
+
+
+### 5.2 使用限制
+- 复制集群需要开启GTID模式，即MySQL参数`gtid_mode=on`。
+- 只能工作在复制集群的slave实例中。
+- 首次加载插件，需要在master上执行`flush logs`操作，或者等待binlog日志的自动轮换也可以。
+- 由于备份表的表名格式为原库名_原表名_时间flag_unix时间戳(us)，所以库名+表名最长不能超过（64-16-7）,否则无法进行备份。
+
+### 5.3 数据恢复说明
+当真的出现表/库被误删除时，可以通过如下方式进行数据恢复。
+- 从slave中将相关库/表数据导出，导入到master中
+- 做主从切换，新主上直接rename即可。
+
+### 5.4 使用示例
 slave查看当前回收站状态
 ```bash
 mysql> show global status like '%recycle%';
@@ -270,10 +281,3 @@ Master_SSL_Verify_Server_Cert: No
 1 row in set (0.01 sec)
 ```
 recycle_bin的备份清除等操作不会记录任何binlog信息，保证和master的GTID一致。
-
-## 其它使用说明
-
->* 复制必须开启GTID，即MySQL参数`gtid_mode=on`
->* 支持异步或者半同步复制，对于异步复制来讲，不会影响master的性能，对于半同步复制来讲，对master有5%左右的性能损失。
->* 可以通过手动drop table的方式清除recycle_bin_dba下的备份表。
->* 由于备份表的表名格式为原库名_原表名_时间flag_unix时间戳(us)，所以库名+表名最长不能超过（64-16(us)-7(flag)）
