@@ -179,7 +179,7 @@ my_bool bdq_backup_db_routine(const char* db,
         THD* bdq_backup_thd,
         ulonglong back_len)
 {
-  int ret = TRUE;
+  int ret = FALSE;
   char my_timestamp[iso8601_size];
   make_recycle_bin_iso8601_timestamp(my_timestamp);
   TABLE_LIST* tables;
@@ -197,15 +197,14 @@ my_bool bdq_backup_db_routine(const char* db,
 
     for (table= tables; table; table=table->next_local)
     {
-      if(bdq_backup_table_routine(table->table_name,table->db,NULL,bdq_backup_thd,back_len))
+      if((ret = !bdq_backup_table_routine(table->table_name,table->db,NULL,bdq_backup_thd,back_len)))
       {
-        recycle_bin_backup_counter++;
-        sql_print_information("Backup table %s.%s successfully.",table->table_name,table->db);
+        sql_print_error("Backup table %s.%s failed",table->table_name,table->db);
       }
       else
       {
-        sql_print_error("Backup table %s.%s failed",table->table_name,table->db);
-        ret  = FALSE;
+        recycle_bin_backup_counter++;
+        sql_print_information("Backup table %s.%s successfully.",table->table_name,table->db);
       }
     }
   } while (0);
@@ -435,12 +434,12 @@ my_bool bdq_backup(const char* drop_query,const char* db,const char* backup_dir,
 
       if(bdq_backup_db_routine(db,backup_dir,bdq_backup_thd,back_len))
       {
-        recycle_bin_backup_counter++;
-        sql_print_information("Backup database %s successfully.",db);
+        sql_print_error("Backup database %s failed",db);
       }
       else
       {
-        sql_print_error("Backup database %s failed",db);
+        recycle_bin_backup_counter++;
+        sql_print_information("Backup database %s successfully.",db);
       }
 
       bdq_after_execute_command(bdq_backup_thd);
@@ -1115,10 +1114,10 @@ bool purge_tables_before_time(THD* thd,st_mysql_const_lex_string db,bool if_exis
   {
       sql_print_error("Recycle_bin purged table error");
   }
+  thd->pop_internal_handler();
 
 
   exit:
-    thd->pop_internal_handler();
   bdq_backup_thd->mdl_context.release_statement_locks();
   bdq_backup_thd->mdl_context.release_transactional_locks();
 
@@ -1299,8 +1298,6 @@ static bool find_db_tables(THD *thd, MY_DIR *dirp,
                        MDL_key::TABLE, table_list->db,
                        table_list->table_name, MDL_EXCLUSIVE,
                        MDL_TRANSACTION);
-
-      size_t time_buf_start_pos =0;
       /* Link into list */
       (*tot_list_next_local)= table_list;
       (*tot_list_next_global)= table_list;
