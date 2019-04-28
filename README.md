@@ -85,6 +85,7 @@ recycle_bin的工作状态，recycle_bin_enabled只是一个参数控制，而Re
 
 
 ### 5.2 使用限制
+- 目前仅在MySQL-5.7.18版本中测试使用过，其它数据库版本如果编译使用有问题，请提issue。
 - 复制集群需要开启GTID模式，即MySQL参数`gtid_mode=on`。
 - 只能工作在复制集群的slave实例中。
 - 首次加载插件，需要在master上执行`flush logs`操作，或者等待binlog日志的自动轮换也可以。
