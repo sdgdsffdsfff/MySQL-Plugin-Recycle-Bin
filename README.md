@@ -18,18 +18,12 @@ recycle_bin是一款MySQL插件，可以在不修改任何MySQL代码的情况�
 
 ## 3. Recycle_bin安装部署说明
 
-### 3.1  下载编译好的lib文件
-```bash
-#下载页面
-https://github.com/sunashe/MySQL-Plugin-Recycle-Bin/releases
-```
-
-### 3.2 源码编译
-可以通过下载源代码编译，源码编译依赖MySQL源代码，推荐使用5.7.18版本进行编译,其它数据库版本未测试。
+### 3.1 源码编译
+可以通过下载源代码编译，源码编译依赖MySQL源代码
 ```sh
 git clone git@github.com:sunashe/MySQL-Plugin-Recycle-Bin.git
 cd MySQL-Plugin-Recycle-Bin
-git checkout 5.7.18
+git checkout 5.7.18 #要和MySQL版本号一致
 cp -r MySQL-Plugin-Recycle-Bin  mysql_source_dir/plugin/
 cd mysql_source_dir
 cmake . -DBUILD_CONFIG=mysql_release -DDOWNLOAD_BOOST=1  -DWITH_BOOST=/usr/local/boost/
@@ -37,7 +31,7 @@ cd plugin/MySQL-Plugin-Recycle-Bin
 make
 ```
 
-### 3.3 安装插件
+### 3.2 安装插件
 ```bash
 #拷贝下载或者编译得到的recycle_bin.so到MySQL中配置的plugin_dir下。并且更改所属用户。
 mysql> install plugin recycle_bin soname 'recycle_bin.so';
@@ -48,7 +42,7 @@ Query OK, 0 rows affected (0.02 sec)
 2019-02-20T19:52:27.326951+08:00 22 [Note] Install Plugin 'recycle_bin' successfully.
 ```
 
-### 3.4 卸载插件
+### 3.3 卸载插件
 和卸载其它插件一样，命令如下：
 ```bash
 mysql> uninstall plugin recycle_bin;
